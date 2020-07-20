@@ -83,10 +83,6 @@ int blake2s_final (blake2s_state_t * S, void *out, size_t outlen);
 int blake2s (void *out, size_t outlen, const void *in, size_t inlen,
 	     const void *key, size_t keylen);
 
-void blake2s_hmac (u8 * out, const u8 * in, const u8 * key,
-		   const size_t outlen, const size_t inlen,
-		   const size_t keylen);
-
 #endif /* __included_crypto_blake2s_h__ */
 
 /*

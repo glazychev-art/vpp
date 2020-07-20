@@ -141,6 +141,147 @@ bool wg_noise_handshake_begin_session (vlib_main_t * vm,
 				       noise_handshake_t * handshake,
 				       noise_keypairs_t * keypairs);
 
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////_______NEW__REALIZATION_______////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+enum noise_state_hs {
+    HS_ZEROED = 0,
+    CREATED_INITIATION,
+    CONSUMED_INITIATION,
+    CREATED_RESPONSE,
+    CONSUMED_RESPONSE,
+};
+
+struct noise_handshake {
+    enum noise_state_hs	 hs_state;
+    uint32_t		 hs_local_index;
+    uint32_t		 hs_remote_index;
+    uint8_t		 	 hs_e[NOISE_PUBLIC_KEY_LEN];
+    uint8_t		 	 hs_hash[NOISE_HASH_LEN];
+    uint8_t		 	 hs_ck[NOISE_HASH_LEN];
+};
+
+struct noise_counter {
+    struct rwlock		 c_lock;
+    uint64_t		 c_send;
+    uint64_t		 c_recv;
+    unsigned long		 c_backtrack[COUNTER_NUM];
+};
+
+struct noise_keypair {
+    SLIST_ENTRY(noise_keypair)	kp_entry;
+    int				kp_valid;
+    int				kp_is_initiator;
+    uint32_t			kp_local_index;
+    uint32_t			kp_remote_index;
+    uint8_t				kp_send[NOISE_SYMMETRIC_KEY_LEN];
+    uint8_t				kp_recv[NOISE_SYMMETRIC_KEY_LEN];
+    struct timespec			kp_birthdate; /* nanouptime */
+    struct noise_counter		kp_ctr;
+};
+
+struct noise_remote {
+    uint8_t				 r_public[NOISE_PUBLIC_KEY_LEN];
+    struct noise_local		*r_local;
+    uint8_t		 		 r_ss[NOISE_PUBLIC_KEY_LEN];
+
+    struct rwlock			 r_handshake_lock;
+    struct noise_handshake		 r_handshake;
+    uint8_t				 r_psk[NOISE_SYMMETRIC_KEY_LEN];
+    uint8_t				 r_timestamp[NOISE_TIMESTAMP_LEN];
+    struct timespec			 r_last_init; /* nanouptime */
+
+    struct rwlock			 r_keypair_lock;
+    SLIST_HEAD(,noise_keypair)	 r_unused_keypairs;
+    struct noise_keypair		*r_next, *r_current, *r_previous;
+    struct noise_keypair		 r_keypair[3]; /* 3: next, current, previous. */
+
+};
+
+struct noise_local {
+    struct rwlock		l_identity_lock;
+    int			l_has_identity;
+    uint8_t			l_public[NOISE_PUBLIC_KEY_LEN];
+    uint8_t			l_private[NOISE_PUBLIC_KEY_LEN];
+
+    struct noise_upcall {
+        void	 *u_arg;
+        struct noise_remote *
+            (*u_remote_get)(void *, uint8_t[NOISE_PUBLIC_KEY_LEN]);
+        uint32_t
+            (*u_index_set)(void *, struct noise_remote *);
+        void	(*u_index_drop)(void *, uint32_t);
+    }			l_upcall;
+};
+
+/* Set/Get noise parameters */
+void	noise_local_init(struct noise_local *, struct noise_upcall *);
+int	noise_local_set_private(struct noise_local *, uint8_t[NOISE_PUBLIC_KEY_LEN]);
+int	noise_local_keys(struct noise_local *, uint8_t[NOISE_PUBLIC_KEY_LEN],
+        uint8_t[NOISE_PUBLIC_KEY_LEN]);
+
+void	noise_remote_init(struct noise_remote *, uint8_t[NOISE_PUBLIC_KEY_LEN],
+        struct noise_local *);
+int	noise_remote_set_psk(struct noise_remote *, uint8_t[NOISE_SYMMETRIC_KEY_LEN]);
+int	noise_remote_keys(struct noise_remote *, uint8_t[NOISE_PUBLIC_KEY_LEN],
+        uint8_t[NOISE_SYMMETRIC_KEY_LEN]);
+
+/* Should be called anytime noise_local_set_private is called */
+void	noise_remote_precompute(struct noise_remote *);
+
+/* Cryptographic functions */
+int	noise_create_initiation(
+        struct noise_remote *,
+        uint32_t *s_idx,
+        uint8_t ue[NOISE_PUBLIC_KEY_LEN],
+        uint8_t es[NOISE_PUBLIC_KEY_LEN + NOISE_AUTHTAG_LEN],
+        uint8_t ets[NOISE_TIMESTAMP_LEN + NOISE_AUTHTAG_LEN]);
+
+int	noise_consume_initiation(
+        struct noise_local *,
+        struct noise_remote **,
+        uint32_t s_idx,
+        uint8_t ue[NOISE_PUBLIC_KEY_LEN],
+        uint8_t es[NOISE_PUBLIC_KEY_LEN + NOISE_AUTHTAG_LEN],
+        uint8_t ets[NOISE_TIMESTAMP_LEN + NOISE_AUTHTAG_LEN]);
+
+int	noise_create_response(
+        struct noise_remote *,
+        uint32_t *s_idx,
+        uint32_t *r_idx,
+        uint8_t ue[NOISE_PUBLIC_KEY_LEN],
+        uint8_t en[0 + NOISE_AUTHTAG_LEN]);
+
+int	noise_consume_response(
+        struct noise_remote *,
+        uint32_t s_idx,
+        uint32_t r_idx,
+        uint8_t ue[NOISE_PUBLIC_KEY_LEN],
+        uint8_t en[0 + NOISE_AUTHTAG_LEN]);
+
+int	noise_remote_begin_session(struct noise_remote *);
+void	noise_remote_clear(struct noise_remote *);
+void	noise_remote_expire_current(struct noise_remote *);
+
+int	noise_remote_ready(struct noise_remote *);
+
+int	noise_remote_encrypt(
+        struct noise_remote *,
+        uint32_t *r_idx,
+        uint64_t *nonce,
+        uint8_t *buf,
+        size_t buflen);
+int	noise_remote_decrypt(
+        struct noise_remote *,
+        uint32_t r_idx,
+        uint64_t nonce,
+        uint8_t *buf,
+        size_t buflen);
+
 #endif /* __included_wg_noise_h__ */
 
 /*
