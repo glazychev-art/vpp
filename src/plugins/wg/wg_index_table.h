@@ -19,28 +19,15 @@
 #include <vppinfra/types.h>
 #include <wg/wg_messages.h>
 
-typedef struct wg_peer wg_peer_t;
-typedef struct noise_handshake noise_handshake_t;
-typedef struct noise_keypair noise_keypair_t;
-
 typedef struct
 {
-  u32 peer_pool_idx;
-  noise_keypair_t *keypair;
-} index_table_entry_t;
-
-typedef struct
-{
-  index_table_entry_t *entry_pool;
   uword *hash;
 } wg_index_table_t;
 
 u32 wg_index_table_add (wg_index_table_t * table, u32 peer_pool_idx);
 void wg_index_table_del (wg_index_table_t * table, u32 key);
-index_table_entry_t *wg_index_table_lookup (const wg_index_table_t * table,
+u32 *wg_index_table_lookup (const wg_index_table_t * table,
 					    u32 key);
-void wg_index_table_add_keypair (wg_index_table_t * table, u32 key,
-				 noise_keypair_t * keypair);
 
 #endif //__included_wg_index_table_h__
 

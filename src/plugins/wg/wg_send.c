@@ -199,22 +199,39 @@ wg_send_handshake (vlib_main_t * vm, wg_peer_t * peer, bool is_retry)
     peer->timer_handshake_attempts = 0;
 
   if (!wg_birthdate_has_expired (peer->last_sent_handshake,
-				 REKEY_TIMEOUT, vlib_time_now (vm)) ||
+                 REKEY_TIMEOUT) ||
       peer->is_dead)
     {
       return;
     }
 
-  if (wg_noise_handshake_create_initiation
-      (vm, &packet, peer, &wmp->index_table, wmp->peers))
+  if (noise_create_initiation(&peer->remote
+                              , &packet.sender_index
+                              , packet.unencrypted_ephemeral
+                              , packet.encrypted_static
+                              , packet.encrypted_timestamp))
     {
       f64 now = vlib_time_now (vm);
-      wg_cookie_add_mac_to_packet (&packet, sizeof (packet), peer, now);
+      packet.header.type = MESSAGE_HANDSHAKE_INITIATION;
+      cookie_maker_mac(&peer->cookie_maker, &packet.macs, &packet, sizeof (packet));
+//      wg_cookie_add_mac_to_packet (&packet, sizeof (packet), peer, now);
       wg_timers_any_authenticated_packet_traversal (peer);
       wg_timers_any_authenticated_packet_sent (peer);
       peer->last_sent_handshake = now;
       wg_timers_handshake_initiated (peer);
-    }
+    } else
+      return;
+
+//  if (wg_noise_handshake_create_initiation
+//      (vm, &packet, peer, &wmp->index_table, wmp->peers))
+//    {
+//      f64 now = vlib_time_now (vm);
+//      wg_cookie_add_mac_to_packet (&packet, sizeof (packet), peer, now);
+//      wg_timers_any_authenticated_packet_traversal (peer);
+//      wg_timers_any_authenticated_packet_sent (peer);
+//      peer->last_sent_handshake = now;
+//      wg_timers_handshake_initiated (peer);
+//    }
 
   u32 bi0 = 0;
   if (!wg_create_buffer
@@ -223,21 +240,21 @@ wg_send_handshake (vlib_main_t * vm, wg_peer_t * peer, bool is_retry)
   ip46_enqueue_packet (vm, bi0, false);
 }
 
-void
-wg_encrypt_message (message_data_t * packet, const u8 * inp,
-		    size_t inp_len, noise_keypair_t * keypair, u64 nonce)
-{
-  if (!keypair || !keypair->sending.is_valid)
-    {
-      return;
-    }
-  packet->header.type = MESSAGE_DATA;
-  packet->receiver_index = keypair->remote_index;
-  packet->counter = nonce;
+//void
+//wg_encrypt_message (message_data_t * packet, const u8 * inp,
+//		    size_t inp_len, noise_keypair_t * keypair, u64 nonce)
+//{
+//  if (!keypair || !keypair->sending.is_valid)
+//    {
+//      return;
+//    }
+//  packet->header.type = MESSAGE_DATA;
+//  packet->receiver_index = keypair->remote_index;
+//  packet->counter = nonce;
 
-  chacha20poly1305_encrypt (packet->encrypted_data, inp, inp_len, NULL, 0,
-			    nonce, keypair->sending.key);
-}
+//  chacha20poly1305_encrypt (packet->encrypted_data, inp, inp_len, NULL, 0,
+//			    nonce, keypair->sending.key);
+//}
 
 void
 wg_send_keepalive (vlib_main_t * vm, wg_peer_t * peer)
@@ -245,16 +262,36 @@ wg_send_keepalive (vlib_main_t * vm, wg_peer_t * peer)
   wg_main_t *wmp = &wg_main;
   message_data_t *packet = clib_mem_alloc (MESSAGE_MINIMUM_LENGTH);
   u32 size_of_packet = MESSAGE_MINIMUM_LENGTH;
+  enum noise_state_crypt state;
 
-  if (!peer->keypairs.current_keypair)
+  if (!peer->remote.r_current)
     {
       wg_send_handshake (vm, peer, false);
       return;
     }
 
-  u64 nonce = peer->keypairs.current_keypair->sending.counter.counter;
+  //u64 nonce = peer->keypairs.current_keypair->sending.counter.counter;
 
-  wg_encrypt_message (packet, NULL, 0, peer->keypairs.current_keypair, nonce);
+  state = noise_remote_encrypt (&peer->remote
+                                , &packet->receiver_index
+                                , &packet->counter
+                                , NULL
+                                , 0
+                                , packet->encrypted_data);
+  switch (state) {
+  case SC_OK:
+      break;
+  case SC_KEEP_KEY_FRESH:
+      wg_send_handshake (vm, peer, false);
+      break;
+  case SC_FAILED:
+      goto out;
+  default:
+      break;
+  }
+  packet->header.type = MESSAGE_DATA;
+
+  //wg_encrypt_message (packet, NULL, 0, peer->keypairs.current_keypair, nonce);
 
   u32 bi0 = 0;
   if (!wg_create_buffer
@@ -266,10 +303,10 @@ wg_send_keepalive (vlib_main_t * vm, wg_peer_t * peer)
   wg_timers_any_authenticated_packet_traversal (peer);
   wg_timers_any_authenticated_packet_sent (peer);
 
-  wg_send_keep_key_fresh (vm, peer);
+//  wg_send_keep_key_fresh (vm, peer);
 
-  peer->keypairs.current_keypair->sending.counter.counter++;
-
+  //peer->keypairs.current_keypair->sending.counter.counter++;
+out:
   clib_mem_free (packet);
 }
 
@@ -281,52 +318,79 @@ wg_send_handshake_response (vlib_main_t * vm, wg_peer_t * peer)
 
   peer->last_sent_handshake = vlib_time_now (vm);
 
-  if (wg_noise_handshake_create_response
-      (&packet, peer, &wmp->index_table, wmp->peers))
-    {
+  if (noise_create_response (&peer->remote
+                        , &packet.sender_index
+                        , &packet.receiver_index
+                        , packet.unencrypted_ephemeral
+                        , packet.encrypted_nothing))
+  {
       f64 now = vlib_time_now (vm);
-      wg_cookie_add_mac_to_packet (&packet, sizeof (packet), peer, now);
-      if (wg_noise_handshake_begin_session (vm, &peer->handshake,
-					    &peer->keypairs))
-	{
-	  wg_timers_session_derived (peer);
-	  wg_timers_any_authenticated_packet_traversal (peer);
-	  wg_timers_any_authenticated_packet_sent (peer);
-	  peer->last_sent_handshake = now;
+      packet.header.type = MESSAGE_HANDSHAKE_RESPONSE;
+      cookie_maker_mac(&peer->cookie_maker, &packet.macs, &packet, sizeof (packet));
+      //wg_cookie_add_mac_to_packet (&packet, sizeof (packet), peer, now);
+      if (noise_remote_begin_session(&peer->remote))
+      {
+          wg_timers_session_derived (peer);
+          wg_timers_any_authenticated_packet_traversal (peer);
+          wg_timers_any_authenticated_packet_sent (peer);
+          peer->last_sent_handshake = now;
 
-	  u32 bi0 = 0;
-	  if (!wg_create_buffer
-	      (vm, (u8 *) & packet, sizeof (packet), &bi0, peer,
-	       wmp->port_src))
-	    return;
+          u32 bi0 = 0;
+          if (!wg_create_buffer
+              (vm, (u8 *) & packet, sizeof (packet), &bi0, peer,
+               wmp->port_src))
+            return;
 
-	  ip46_enqueue_packet (vm, bi0, false);
-	}
-    }
+          ip46_enqueue_packet (vm, bi0, false);
+      }
+  }
+
+//  if (wg_noise_handshake_create_response
+//      (&packet, peer, &wmp->index_table, wmp->peers))
+//    {
+//      f64 now = vlib_time_now (vm);
+//      wg_cookie_add_mac_to_packet (&packet, sizeof (packet), peer, now);
+//      if (wg_noise_handshake_begin_session (vm, &peer->handshake,
+//					    &peer->keypairs))
+//	{
+//	  wg_timers_session_derived (peer);
+//	  wg_timers_any_authenticated_packet_traversal (peer);
+//	  wg_timers_any_authenticated_packet_sent (peer);
+//	  peer->last_sent_handshake = now;
+
+//	  u32 bi0 = 0;
+//	  if (!wg_create_buffer
+//	      (vm, (u8 *) & packet, sizeof (packet), &bi0, peer,
+//	       wmp->port_src))
+//	    return;
+
+//	  ip46_enqueue_packet (vm, bi0, false);
+//	}
+//    }
 }
 
-bool
-wg_send_keep_key_fresh (vlib_main_t * vm, wg_peer_t * peer)
-{
-  noise_keypair_t *keypair;
-  bool send = false;
-  f64 now = vlib_time_now (vm);
-  keypair = peer->keypairs.current_keypair;
+//bool
+//wg_send_keep_key_fresh (vlib_main_t * vm, wg_peer_t * peer)
+//{
+//  noise_keypair_t *keypair;
+//  bool send = false;
+//  f64 now = vlib_time_now (vm);
+//  keypair = peer->keypairs.current_keypair;
 
-  if ((keypair && keypair->sending.is_valid) &&
-      ((keypair->sending.counter.counter >
-	REKEY_AFTER_MESSAGES) ||
-       (keypair->i_am_the_initiator &&
-	wg_birthdate_has_expired (keypair->sending.birthdate,
-				  REKEY_AFTER_TIME, now))))
-    send = true;
+//  if ((keypair && keypair->sending.is_valid) &&
+//      ((keypair->sending.counter.counter >
+//	REKEY_AFTER_MESSAGES) ||
+//       (keypair->i_am_the_initiator &&
+//	wg_birthdate_has_expired (keypair->sending.birthdate,
+//				  REKEY_AFTER_TIME, now))))
+//    send = true;
 
-  if (send)
-    {
-      wg_send_handshake (vm, peer, false);
-    }
-  return send;
-}
+//  if (send)
+//    {
+//      wg_send_handshake (vm, peer, false);
+//    }
+//  return send;
+//}
 
 /*
  * fd.io coding-style-patch-verification: ON

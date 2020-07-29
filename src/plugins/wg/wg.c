@@ -25,6 +25,42 @@
 
 wg_main_t wg_main;
 
+struct noise_remote *
+wg_remote_get(uint8_t public[NOISE_PUBLIC_KEY_LEN])
+{
+    wg_main_t *wmp = &wg_main;
+    wg_peer_t *peer = NULL;
+    wg_peer_t *peer_iter;
+    pool_foreach (peer_iter, wmp->peers, (
+                     {
+                     if (!memcmp
+                         (peer_iter->remote.r_public,
+                      public, NOISE_PUBLIC_KEY_LEN))
+                     {
+                         peer = peer_iter;
+                         break;
+                     }
+                     }
+          ));
+    return peer ? &peer->remote : NULL;
+}
+
+uint32_t
+wg_index_set(struct noise_remote *remote)
+{
+    wg_main_t *wmp = &wg_main;
+    u32 ret = wg_index_table_add(&wmp->index_table, remote->r_peer_idx);
+    return ret;
+}
+
+void
+wg_index_drop(uint32_t key)
+{
+    wg_main_t *wmp = &wg_main;
+    wg_index_table_del(&wmp->index_table, key);
+}
+
+
 static vnet_api_error_t
 wg_register_udp_port (vlib_main_t * vm, u16 port)
 {
@@ -62,7 +98,6 @@ wg_device_set (wg_main_t * wmp, char private_key_64[NOISE_KEY_LEN_BASE64],
 	  return error;
 	}
 
-      f64 now = vlib_time_now (wmp->vlib_main);
       vnet_api_error_t ret = wg_register_udp_port (wmp->vlib_main, port);
       if (ret == VNET_API_ERROR_VALUE_EXIST)
 	{
@@ -72,13 +107,19 @@ wg_device_set (wg_main_t * wmp, char private_key_64[NOISE_KEY_LEN_BASE64],
 	}
 
       wmp->port_src = port;
+      struct noise_upcall upcall;
+      upcall.u_remote_get = wg_remote_get;
+      upcall.u_index_set = wg_index_set;
+      upcall.u_index_drop = wg_index_drop;
 
-      wg_noise_init ();
-      wg_cookie_checker_init (&wmp->cookie_checker, now);
-      wg_noise_set_static_identity_private_key (&wmp->static_identity,
-						private_key);
-      wg_cookie_checker_precompute_keys (&wmp->cookie_checker,
-					 &wmp->static_identity);
+      //wg_cookie_checker_init (&wmp->cookie_checker, now);
+      noise_local_init(&wmp->local, &upcall);
+      noise_local_set_private(&wmp->local, private_key);
+//      wg_noise_set_static_identity_private_key (&wmp->static_identity,
+//						private_key);
+      cookie_checker_update(&wmp->cookie_checker, wmp->local.l_public);
+//      wg_cookie_checker_precompute_keys (&wmp->cookie_checker,
+//                     &wmp->local);
       wmp->is_inited = true;
     }
   else
@@ -119,7 +160,7 @@ wg_device_clear (wg_main_t * wmp)
     pool_put_index (wmp->peers, *idx);
   }
   clib_memset (&wmp->cookie_checker, 0, sizeof (wmp->cookie_checker));
-  clib_memset (&wmp->static_identity, 0, sizeof (wmp->static_identity));
+  clib_memset (&wmp->local, 0, sizeof (wmp->local));
   wmp->is_inited = false;
 
   return error;
@@ -164,8 +205,10 @@ wg_peer_set (wg_main_t * wmp, char public_key_64[NOISE_KEY_LEN_BASE64],
   wg_peer_init (peer, now);
   wg_peer_fill (peer, endpoint, (u16) port, persistent_keepalive, allowed_ip,
 		tun_sw_if_index, now);
-  wg_noise_handshake_init (peer, &wmp->static_identity, public_key, NULL);
-  wg_cookie_checker_precompute_peer_keys (peer);
+  noise_remote_init(&peer->remote, peer-wmp->peers, public_key, &wmp->local);
+  //wg_noise_handshake_init (peer, &wmp->static_identity, public_key, NULL);
+  cookie_maker_init (&peer->cookie_maker, public_key);
+  //wg_cookie_checker_precompute_peer_keys (peer);
 
   vnet_feature_enable_disable ("ip4-output", "wg-output-tun",
 			       tun_sw_if_index, 1, 0, 0);
@@ -197,7 +240,7 @@ wg_peer_remove (wg_main_t * wmp, char public_key_64[NOISE_KEY_LEN_BASE64])
   pool_foreach (peer, peer_pool, (
 				   {
 				   if (!memcmp
-				       (peer->handshake.remote_static,
+                       (peer->remote.r_public,
 					public_key, NOISE_PUBLIC_KEY_LEN))
 				   {
 				   vnet_feature_enable_disable ("ip4-output",

@@ -308,7 +308,7 @@ wg_show_info_command_fn (vlib_main_t * vm,
   wg_peer_t *peer = NULL;
 
 
-  key_to_base64 (key_64, wmp->static_identity.static_private);
+  key_to_base64 (key_64, wmp->local.l_private);
 
   vlib_cli_output (vm, "Device private-key: %s", key_64);
   vlib_cli_output (vm, "Device port: %u", wmp->port_src);
@@ -318,7 +318,7 @@ wg_show_info_command_fn (vlib_main_t * vm,
   pool_foreach (peer, peer_pool, (
                    {
                         char key_64[NOISE_KEY_LEN_BASE64];
-                        key_to_base64 (key_64, peer->handshake.remote_static);
+                        key_to_base64 (key_64, peer->remote.r_public);
                         vlib_cli_output (vm, "---------------------------------");
                         vlib_cli_output (vm, "Public-key: %s", key_64);
                         vlib_cli_output (vm, "Port: %u", peer->port);

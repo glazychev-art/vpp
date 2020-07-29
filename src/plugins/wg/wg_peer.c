@@ -26,17 +26,16 @@ void
 wg_peer_clear (wg_peer_t * peer, f64 now)
 {
   wg_timers_stop (peer);
-  wg_noise_handshake_clear (&peer->handshake);
-  wg_noise_keypairs_clear (&peer->keypairs);
+  noise_remote_clear (&peer->remote);
   wg_noise_reset_last_sent_handshake (&peer->last_sent_handshake, now);
-  wg_cookie_init (&peer->latest_cookie);
 
+  clib_memset (&peer->cookie_maker, 0, sizeof(peer->cookie_maker));
+  //wg_cookie_init (&peer->latest_cookie);
   peer->allowed_ip.as_u32 = 0;
   peer->ip4_address.as_u32 = 0;
 
   peer->persistent_keepalive_interval = 0;
   peer->port = 0;
-  peer->sent_lastminute_handshake = false;
   peer->timer_handshake_attempts = 0;
   peer->timer_need_another_keepalive = false;
   peer->is_dead = true;

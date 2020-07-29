@@ -13,15 +13,13 @@
 
 typedef struct wg_peer
 {
-  noise_handshake_t handshake;
-  cookie_t latest_cookie;
-  noise_keypairs_t keypairs;
+  struct noise_remote remote;
+  struct cookie_maker cookie_maker;
 
   ip4_address_t ip4_address;
   u16 port;
   u16 persistent_keepalive_interval;
 
-  bool sent_lastminute_handshake;
   u32 timer_handshake_attempts;
 
   f64 last_sent_handshake;
@@ -30,6 +28,7 @@ typedef struct wg_peer
   ip4_address_t allowed_ip;
   u32 tun_sw_if_index;
 
+  /*Timers*/
   tw_timer_wheel_16t_2w_512sl_t timer_wheel;
   u32 timers[WG_N_TIMERS];
 

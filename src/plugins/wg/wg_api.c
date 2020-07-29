@@ -80,7 +80,7 @@ vl_api_wg_device_dump_t_handler (vl_api_wg_device_dump_t * mp)
            clib_memset (rmp->private_key, 0, NOISE_KEY_LEN_BASE64);
        } else {
            char key_64[NOISE_KEY_LEN_BASE64];
-           key_to_base64 (key_64, wmp->static_identity.static_private);      
+           key_to_base64 (key_64, wmp->local.l_private);
            clib_memcpy(rmp->private_key, key_64, NOISE_KEY_LEN_BASE64);
            rmp->port = clib_host_to_net_u16 (wmp->port_src);
        }
@@ -147,7 +147,7 @@ send_wg_peers_details (wg_peer_t * peer, vl_api_registration_t * reg,
   rmp->_vl_msg_id =
     clib_host_to_net_u16 (VL_API_WG_PEERS_DETAILS + wg_main.msg_id_base);
 
-  key_to_base64 (key_64, peer->handshake.remote_static);
+  key_to_base64 (key_64, peer->remote.r_public);
   rmp->is_dead = peer->is_dead;
   clib_memcpy(rmp->public_key, key_64, NOISE_KEY_LEN_BASE64);
   clib_memcpy(rmp->ip4_address, peer->ip4_address.as_u8, sizeof(ip4_address_t));

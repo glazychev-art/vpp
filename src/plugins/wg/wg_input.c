@@ -25,7 +25,8 @@
 _(NONE, "No error")							\
 _(HANDSHAKE_MAC, "Invalid MAC of handshake")                              \
 _(PEER, "Peer error")                     \
-_(DECRYPTION, "Failed while decryption")
+_(DECRYPTION, "Failed while decryption")  \
+_(UNDEFINED, "Undefined error")
 
 typedef enum
 {
@@ -87,64 +88,66 @@ typedef enum
   WG_INPUT_N_NEXT,
 } wg_input_next_t;
 
-static bool
-decrypt_message (u8 * dst, message_data_t * src, u32 src_len,
-		 noise_keypair_t * keypair, f64 now)
-{
-  if (!keypair)
-    return false;
+//static bool
+//decrypt_message (u8 * dst, message_data_t * src, u32 src_len,
+//		 noise_keypair_t * keypair, f64 now)
+//{
+//  if (!keypair)
+//    return false;
 
-  noise_symmetric_key_t *key = &keypair->receiving;
+//  noise_symmetric_key_t *key = &keypair->receiving;
 
-  if (!key)
-    return false;
+//  if (!key)
+//    return false;
 
-  if (!(key->is_valid) ||
-      wg_birthdate_has_expired (key->birthdate, REJECT_AFTER_TIME, now) ||
-      key->counter.receive.counter >= REJECT_AFTER_MESSAGES)
-    {
-      key->is_valid = false;
-      return false;
-    }
+//  if (!(key->is_valid) ||
+//      wg_birthdate_has_expired (key->birthdate, REJECT_AFTER_TIME, now) ||
+//      key->counter.receive.counter >= REJECT_AFTER_MESSAGES)
+//    {
+//      key->is_valid = false;
+//      return false;
+//    }
 
-  u64 nonce = src->counter;
-  if (!chacha20poly1305_decrypt (dst, src->encrypted_data, src_len, NULL,
-				 0, nonce, key->key))
-    return false;
+//  u64 nonce = src->counter;
+//  if (!chacha20poly1305_decrypt (dst, src->encrypted_data, src_len, NULL,
+//				 0, nonce, key->key))
+//    return false;
 
-  return true;
-}
+//  return true;
+//}
+
+//static void
+//keep_key_fresh (vlib_main_t * vm, wg_peer_t * peer)
+//{
+//  noise_keypair_t *keypair;
+//  bool send = false;
+//  f64 now = vlib_time_now (vm);
+
+//  if (peer->sent_lastminute_handshake)
+//    return;
+
+//  keypair = peer->keypairs.current_keypair;
+//  if (keypair && keypair->sending.is_valid &&
+//      keypair->i_am_the_initiator &&
+//      wg_birthdate_has_expired (keypair->sending.birthdate,
+//				REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT -
+//				REKEY_TIMEOUT, now))
+//    send = true;
+
+//  if (send)
+//    {
+//      peer->sent_lastminute_handshake = true;
+//      wg_send_handshake (vm, peer, false);
+//    }
+//}
 
 static void
-keep_key_fresh (vlib_main_t * vm, wg_peer_t * peer)
+set_peer_address (wg_peer_t *peer, ip4_address_t ip4, u16 udp_port)
 {
-  noise_keypair_t *keypair;
-  bool send = false;
-  f64 now = vlib_time_now (vm);
-
-  if (peer->sent_lastminute_handshake)
-    return;
-
-  keypair = peer->keypairs.current_keypair;
-  if (keypair && keypair->sending.is_valid &&
-      keypair->i_am_the_initiator &&
-      wg_birthdate_has_expired (keypair->sending.birthdate,
-				REJECT_AFTER_TIME - KEEPALIVE_TIMEOUT -
-				REKEY_TIMEOUT, now))
-    send = true;
-
-  if (send)
-    {
-      peer->sent_lastminute_handshake = true;
-      wg_send_handshake (vm, peer, false);
+    if (peer) {
+      peer->ip4_address = ip4;
+      peer->port = udp_port;
     }
-}
-
-static void
-set_peer_address (wg_peer_t * peer, ip4_address_t ip4, u16 udp_port)
-{
-  peer->ip4_address = ip4;
-  peer->port = udp_port;
 }
 
 static wg_input_error_t
@@ -153,7 +156,7 @@ wg_handshake_process (vlib_main_t * vm, wg_main_t * wmp, vlib_buffer_t * b)
   enum cookie_mac_state mac_state;
   bool packet_needs_cookie;
   bool under_load;
-  wg_peer_t *peer;
+  wg_peer_t *peer = NULL;
 
   void *current_b_data = vlib_buffer_get_current (b);
 
@@ -168,18 +171,39 @@ wg_handshake_process (vlib_main_t * vm, wg_main_t * wmp, vlib_buffer_t * b)
 
   if (header->type == MESSAGE_HANDSHAKE_COOKIE)
     {
-      wg_cookie_message_consume (vm, &wmp->index_table, wmp->peers,
-				 (message_handshake_cookie_t *)
-				 current_b_data);
-      return true;
+      message_handshake_cookie_t *packet = (message_handshake_cookie_t *)current_b_data;
+      u32 *entry =
+        wg_index_table_lookup (&wmp->index_table, packet->receiver_index);
+      if (entry) {
+        peer = pool_elt_at_index (wmp->peers, *entry);
+      }
+      if (!peer)
+        return WG_INPUT_ERROR_PEER;
+
+      cookie_maker_consume_payload(vm
+                                   , &peer->cookie_maker
+                                   , packet->nonce
+                                   , packet->encrypted_cookie);
+
+//      wg_cookie_message_consume (vm, &wmp->index_table, wmp->peers,
+//				 (message_handshake_cookie_t *)
+//				 current_b_data);
+      return WG_INPUT_ERROR_NONE;
     }
 
   u32 len = header->type == MESSAGE_HANDSHAKE_INITIATION
     ? sizeof (message_handshake_initiation_t)
     : sizeof (message_handshake_response_t);
+
+  message_macs_t *macs = (message_macs_t *)
+    ((u8 *) current_b_data + len - sizeof (*macs));
+
   mac_state =
-    wg_cookie_validate_packet (vm, &wmp->cookie_checker, current_b_data, len,
-			       ip4_src, udp_src_port, under_load);
+    cookie_checker_validate_macs (vm, &wmp->cookie_checker, macs, current_b_data, len,
+                   under_load, ip4_src, udp_src_port);
+//  mac_state =
+//    wg_cookie_validate_packet (vm, &wmp->cookie_checker, current_b_data, len,
+//			       ip4_src, udp_src_port, under_load);
   if ((under_load && mac_state == VALID_MAC_WITH_COOKIE)
       || (!under_load && mac_state == VALID_MAC_BUT_NO_COOKIE))
     packet_needs_cookie = false;
@@ -187,7 +211,6 @@ wg_handshake_process (vlib_main_t * vm, wg_main_t * wmp, vlib_buffer_t * b)
     packet_needs_cookie = true;
   else
     return WG_INPUT_ERROR_HANDSHAKE_MAC;
-
 
   switch (header->type)
     {
@@ -199,10 +222,24 @@ wg_handshake_process (vlib_main_t * vm, wg_main_t * wmp, vlib_buffer_t * b)
 	  {
 	    // TODO: Add processing
 	  }
-	peer =
-	  wg_noise_handshake_consume_initiation (message,
-						 &wmp->static_identity,
-						 wmp->peers);
+    struct noise_remote *rp;
+
+    if (noise_consume_initiation (&wmp->local
+                             , &rp
+                             , message->sender_index
+                             , message->unencrypted_ephemeral
+                             , message->encrypted_static
+                             , message->encrypted_timestamp))
+    {
+         peer = pool_elt_at_index (wmp->peers, rp->r_peer_idx);
+    }
+
+
+
+//	peer =
+//	  wg_noise_handshake_consume_initiation (message,
+//						 &wmp->static_identity,
+//						 wmp->peers);
 	if (!peer)
 	  return WG_INPUT_ERROR_PEER;
 
@@ -214,26 +251,52 @@ wg_handshake_process (vlib_main_t * vm, wg_main_t * wmp, vlib_buffer_t * b)
       {
 
 	message_handshake_response_t *resp = current_b_data;
-	peer =
-	  wg_noise_handshake_consume_response (resp, &wmp->static_identity,
-					       &wmp->index_table, wmp->peers);
 
-	if (!peer)
-	  {
-	    return WG_INPUT_ERROR_PEER;
-	  }
+
+    u32 *entry =
+      wg_index_table_lookup (&wmp->index_table, resp->receiver_index);
+    if (entry)
+      {
+        peer = pool_elt_at_index (wmp->peers, *entry);
+        if (!peer || peer->is_dead)
+            return WG_INPUT_ERROR_PEER;
+      }
+
+    if (!noise_consume_response(&peer->remote
+                           , resp->sender_index
+                           , resp->receiver_index
+                           , resp->unencrypted_ephemeral
+                           , resp->encrypted_nothing))
+    {
+        return WG_INPUT_ERROR_PEER;
+    }
+//	peer =
+//	  wg_noise_handshake_consume_response (resp, &wmp->static_identity,
+//					       &wmp->index_table, wmp->peers);
+
+//	if (!peer)
+//	  {
+//	    return WG_INPUT_ERROR_PEER;
+//	  }
 	if (packet_needs_cookie)
 	  {
 	    // TODO: Add processing
 	  }
+
 	set_peer_address (peer, ip4_src, udp_src_port);
-	if (wg_noise_handshake_begin_session (vm, &peer->handshake,
-					      &peer->keypairs))
-	  {
-	    wg_timers_session_derived (peer);
-	    wg_timers_handshake_complete (peer, vlib_time_now (vm));
-	    wg_send_keepalive (vm, peer);
-	  }
+    if (noise_remote_begin_session(&peer->remote))
+    {
+        wg_timers_session_derived (peer);
+        wg_timers_handshake_complete (peer);
+        wg_send_keepalive (vm, peer);
+    }
+//	if (wg_noise_handshake_begin_session (vm, &peer->handshake,
+//					      &peer->keypairs))
+//	  {
+//	    wg_timers_session_derived (peer);
+//	    wg_timers_handshake_complete (peer, vlib_time_now (vm));
+//	    wg_send_keepalive (vm, peer);
+//	  }
 	break;
       }
     default:
@@ -286,18 +349,13 @@ VLIB_NODE_FN (wg_input_node) (vlib_main_t * vm,
 	  }
 	case MESSAGE_DATA:
 	  {
-
-	    noise_keypair_t *keypair = NULL;
-	    f64 now = vlib_time_now (vm);
-
 	    message_data_t *data = vlib_buffer_get_current (b[0]);
-	    index_table_entry_t *entry =
+        u32 *entry =
 	      wg_index_table_lookup (&wmp->index_table, data->receiver_index);
 
 	    if (entry)
 	      {
-		peer = pool_elt_at_index (wmp->peers, entry->peer_pool_idx);
-		keypair = entry->keypair;
+        peer = pool_elt_at_index (wmp->peers, *entry);
 	      }
 	    if (!peer)
 	      {
@@ -310,24 +368,34 @@ VLIB_NODE_FN (wg_input_node) (vlib_main_t * vm,
 	    u16 decr_len = encr_len - NOISE_AUTHTAG_LEN;
 	    u8 *decr_data = clib_mem_alloc (decr_len);
 
-	    if (!decrypt_message (decr_data, data, encr_len, keypair, now))
-	      {
-		next[0] = WG_INPUT_NEXT_ERROR;
-		b[0]->error = node->errors[WG_INPUT_ERROR_DECRYPTION];
-		goto out;
-	      }
+        enum noise_state_crypt state_cr = noise_remote_decrypt(
+                    &peer->remote,
+                    data->receiver_index,
+                    data->counter,
+                    data->encrypted_data,
+                    encr_len,
+                    decr_data);
+
+        switch (state_cr) {
+        case SC_OK:
+            break;
+        case SC_CONN_RESET:
+            wg_timers_handshake_complete (peer);
+            break;
+        case SC_KEEP_KEY_FRESH:
+            wg_send_handshake (vm, peer, false);
+            break;
+        case SC_FAILED:
+            next[0] = WG_INPUT_NEXT_ERROR;
+            b[0]->error = node->errors[WG_INPUT_ERROR_DECRYPTION];
+            goto out;
+        default:
+            break;
+        }
 
 	    clib_memcpy (vlib_buffer_get_current (b[0]), decr_data, decr_len);
 	    b[0]->current_length = decr_len;
-
 	    clib_mem_free (decr_data);
-
-	    if (wg_noise_received_with_keypair
-		(&wmp->index_table, &peer->keypairs, keypair))
-	      {
-		wg_timers_handshake_complete (peer, now);
-	      }
-	    keep_key_fresh (vm, peer);
 
 	    wg_timers_any_authenticated_packet_received (peer);
 	    wg_timers_any_authenticated_packet_traversal (peer);

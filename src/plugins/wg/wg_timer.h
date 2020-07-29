@@ -57,12 +57,13 @@ void wg_timers_data_received (wg_peer_t * peer);
 void wg_timers_init (wg_peer_t * peer, f64 now);
 void wg_timers_stop (wg_peer_t * peer);
 
-void wg_timers_handshake_complete (wg_peer_t * peer, f64 current_time);
+void wg_timers_handshake_complete (wg_peer_t * peer);
 
 static inline bool
 wg_birthdate_has_expired (f64 birthday_seconds,
-			  f64 expiration_seconds, f64 now_seconds)
+              f64 expiration_seconds)
 {
+  f64 now_seconds = vlib_time_now(vlib_get_main()); //TODO Check this
   return (birthday_seconds + expiration_seconds) < now_seconds;
 }
 

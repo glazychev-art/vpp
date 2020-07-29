@@ -22,11 +22,11 @@ void wg_send_handshake (vlib_main_t * vm, wg_peer_t * peer, bool is_retry);
 void wg_send_keepalive (vlib_main_t * vm, wg_peer_t * peer);
 
 void wg_send_handshake_response (vlib_main_t * vm, wg_peer_t * peer);
-bool wg_send_keep_key_fresh (vlib_main_t * vm, wg_peer_t * peer);
+//bool wg_send_keep_key_fresh (vlib_main_t * vm, wg_peer_t * peer);
 
-void wg_encrypt_message (message_data_t * packet,
-			 const u8 * inp, size_t inp_len,
-			 noise_keypair_t * keypair, u64 nonce);
+//void wg_encrypt_message (message_data_t * packet,
+//			 const u8 * inp, size_t inp_len,
+//			 noise_keypair_t * keypair, u64 nonce);
 #endif // __included_wg_send_h__
 
 /*

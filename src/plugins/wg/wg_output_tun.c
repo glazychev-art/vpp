@@ -91,8 +91,6 @@ VLIB_NODE_FN (wg_output_tun_node) (vlib_main_t * vm,
 
   while (n_left_from > 0)
     {
-      noise_keypair_t *keypair;
-
       ip4_header_t *iph_out = vlib_buffer_get_current (b[0]);
       u8 *plain_data = vlib_buffer_get_current (b[0]) + sizeof (ip4_header_t);
       u16 plain_data_len =
@@ -118,8 +116,7 @@ VLIB_NODE_FN (wg_output_tun_node) (vlib_main_t * vm,
       goto out;
     }
 
-      keypair = peer->keypairs.current_keypair;
-      if (!keypair)
+      if (!peer->remote.r_current)
     {
       wg_send_handshake (vm, peer, false);
       next[0] = WG_OUTPUT_TUN_NEXT_ERROR;
@@ -127,15 +124,39 @@ VLIB_NODE_FN (wg_output_tun_node) (vlib_main_t * vm,
       goto out;
     }
 
-      wg_send_keep_key_fresh (vm, peer);
+      //wg_send_keep_key_fresh (vm, peer);
 
       size_t encrypted_packet_len = message_data_len (plain_data_len);
       message_data_t *encrypted_packet =
-    clib_mem_alloc (encrypted_packet_len);
+      clib_mem_alloc (encrypted_packet_len);
 
-      u64 nonce = peer->keypairs.current_keypair->sending.counter.counter;
-      wg_encrypt_message (encrypted_packet, plain_data, plain_data_len,
-              peer->keypairs.current_keypair, nonce);
+      //u64 nonce = peer->keypairs.current_keypair->sending.counter.counter;
+
+      enum noise_state_crypt state;
+
+      state = noise_remote_encrypt (&peer->remote
+                            , &encrypted_packet->receiver_index
+                            , &encrypted_packet->counter
+                            , plain_data
+                            , plain_data_len
+                            , encrypted_packet->encrypted_data);
+      switch (state) {
+      case SC_OK:
+          break;
+      case SC_KEEP_KEY_FRESH:
+          wg_send_handshake (vm, peer, false);
+          break;
+      case SC_FAILED:
+          clib_mem_free (encrypted_packet);
+          goto out;
+      default:
+          break;
+      }
+
+      encrypted_packet->header.type = MESSAGE_DATA;
+
+//      wg_encrypt_message (encrypted_packet, plain_data, plain_data_len,
+//              peer->keypairs.current_keypair, nonce);
 
       clib_memcpy (plain_data + sizeof (udp_header_t),
            (u8 *) encrypted_packet, encrypted_packet_len);
@@ -161,7 +182,7 @@ VLIB_NODE_FN (wg_output_tun_node) (vlib_main_t * vm,
       wg_timers_any_authenticated_packet_sent (peer);
       wg_timers_data_sent (peer);
 
-      peer->keypairs.current_keypair->sending.counter.counter++;
+      //peer->keypairs.current_keypair->sending.counter.counter++;
     out:
       if (PREDICT_FALSE ((node->flags & VLIB_NODE_FLAG_TRACE)
              && (b[0]->flags & VLIB_BUFFER_IS_TRACED)))

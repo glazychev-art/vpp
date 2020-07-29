@@ -11,6 +11,8 @@
 #include <wg/crypto/include/curve25519.h>
 #include <wg/crypto/include/chacha20poly1305.h>
 #include <wg/crypto/include/blake2s.h>
+//#include <wg/wg_cookie.h>
+//#include <wg/wg_noise.h>
 
 #define WG_TICK 0.1				/**< WG tick period (s) */
 #define WHZ (u32) (1/WG_TICK)		/**< WG tick frequency */

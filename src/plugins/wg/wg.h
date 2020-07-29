@@ -31,8 +31,9 @@ typedef struct
 
   // Device params
   bool is_inited;
-  noise_static_identity_t static_identity;
-  cookie_checker_t cookie_checker;
+  struct noise_local local;
+  //noise_static_identity_t static_identity;
+  struct cookie_checker cookie_checker;
   u16 port_src;
 
   // Peers pool

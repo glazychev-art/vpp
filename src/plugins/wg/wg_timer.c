@@ -113,8 +113,9 @@ wg_expired_zero_key_material (wg_peer_t * peer)
 {
   if (!peer->is_dead)
     {
-      wg_noise_handshake_clear (&peer->handshake);
-      wg_noise_keypairs_clear (&peer->keypairs);
+      noise_remote_clear (&peer->remote);
+//      wg_noise_handshake_clear (&peer->handshake);
+//      wg_noise_keypairs_clear (&peer->keypairs);
     }
 }
 
@@ -188,12 +189,11 @@ wg_timers_data_received (wg_peer_t * peer)
  * or when getting key confirmation via the first data message.
  */
 void
-wg_timers_handshake_complete (wg_peer_t * peer, f64 current_time)
+wg_timers_handshake_complete (wg_peer_t * peer)
 {
   stop_timer (peer, WG_TIMER_RETRANSMIT_HANDSHAKE);
 
   peer->timer_handshake_attempts = 0;
-  peer->sent_lastminute_handshake = false;
 }
 
 void
